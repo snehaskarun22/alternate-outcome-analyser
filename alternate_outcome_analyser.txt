@@ -1,0 +1,666 @@
+import streamlit as st
+import random
+import json
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+
+# ─────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="Alternative Outcome Analyser",
+    page_icon="🔭",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ─────────────────────────────────────────────
+# CUSTOM CSS
+# ─────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Space Grotesk', sans-serif;
+}
+
+.stApp {
+    background: #0d1117;
+    color: #e6edf3;
+}
+
+section[data-testid="stSidebar"] {
+    background: #161b22;
+    border-right: 1px solid #30363d;
+}
+
+.main-title {
+    font-size: 2.4rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #58a6ff 0%, #bc8cff 50%, #ff7b72 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.2rem;
+}
+
+.subtitle {
+    color: #8b949e;
+    font-size: 1rem;
+    margin-bottom: 2rem;
+}
+
+.card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.metric-card {
+    background: linear-gradient(135deg, #1c2233 0%, #161b22 100%);
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 1.2rem 1.5rem;
+    text-align: center;
+}
+
+.metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: #58a6ff;
+}
+
+.metric-label {
+    font-size: 0.8rem;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.winner-badge {
+    background: linear-gradient(135deg, #238636, #196127);
+    border: 1px solid #2ea043;
+    border-radius: 20px;
+    padding: 0.3rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #56d364;
+    display: inline-block;
+}
+
+.section-header {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #58a6ff;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.factor-tag {
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.8rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: #e6edf3;
+    display: inline-block;
+    margin: 2px;
+}
+
+.stButton > button {
+    background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    padding: 0.6rem 2rem;
+    font-family: 'Space Grotesk', sans-serif;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 15px rgba(31, 111, 235, 0.4);
+}
+
+div[data-testid="stNumberInput"] input,
+div[data-testid="stTextInput"] input,
+div[data-testid="stSelectbox"] select {
+    background: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+}
+
+.stSlider > div > div > div > div {
+    background: #1f6feb;
+}
+
+.recommendation-box {
+    background: linear-gradient(135deg, #0d2137 0%, #0d1117 100%);
+    border: 1px solid #1f6feb;
+    border-left: 4px solid #58a6ff;
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0;
+}
+
+hr { border-color: #21262d; }
+
+/* Tabs */
+button[data-baseweb="tab"] {
+    color: #8b949e !important;
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-weight: 500 !important;
+}
+button[data-baseweb="tab"][aria-selected="true"] {
+    color: #58a6ff !important;
+    border-bottom-color: #58a6ff !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# MONTE CARLO ENGINE
+# ─────────────────────────────────────────────
+def monte_carlo(options: dict, factors: dict, trials: int = 10_000):
+    results = {}
+    for name, scores in options.items():
+        totals = []
+        for _ in range(trials):
+            run_total = 0
+            for f, weight in factors.items():
+                base, unc = scores[f]
+                val = random.uniform(base - unc, base + unc)
+                val = max(0.0, min(10.0, val))
+                run_total += val * weight
+            totals.append(run_total)
+        avg = sum(totals) / trials
+        prob = sum(1 for r in totals if r >= 6) / trials * 100
+        results[name] = {"avg": avg, "prob": prob, "raw": totals}
+    return results
+
+
+def sensitivity(options: dict, factors: dict):
+    impact = {}
+    for f, w in factors.items():
+        total = sum(options[opt][f][0] * w for opt in options)
+        impact[f] = total
+    return dict(sorted(impact.items(), key=lambda x: x[1], reverse=True))
+
+
+# ─────────────────────────────────────────────
+# PROBLEM DEFINITIONS
+# ─────────────────────────────────────────────
+PROBLEMS = {
+    "🏛️ Policy Decision (Economics)": {
+        "description": "Compare government economic policies using weighted macroeconomic factors.",
+        "factors": {
+            "Inflation Control":  0.4,
+            "Economic Growth":    0.3,
+            "Unemployment":       0.2,
+            "Budget Impact":      0.1,
+        },
+        "options": {
+            "Interest Rate Increase": {
+                "Inflation Control":  (8.0, 1.0),
+                "Economic Growth":    (4.5, 1.0),
+                "Unemployment":       (3.5, 1.0),
+                "Budget Impact":      (6.0, 1.0),
+            },
+            "Government Spending": {
+                "Inflation Control":  (3.0, 1.0),
+                "Economic Growth":    (7.5, 1.0),
+                "Unemployment":       (7.0, 1.0),
+                "Budget Impact":      (3.0, 1.0),
+            },
+        },
+    },
+
+    "🚀 Startup Funding Strategy": {
+        "description": "Bootstrapping vs. External Investment — which path fits your startup best?",
+        "factors": {
+            "Financial Risk":    0.25,
+            "Business Control":  0.25,
+            "Growth Speed":      0.30,
+            "Market Competition": 0.20,
+        },
+        "options": {
+            "Bootstrapping": {
+                "Financial Risk":    (2.5, 1.0),
+                "Business Control":  (9.0, 0.5),
+                "Growth Speed":      (3.5, 1.2),
+                "Market Competition": (4.0, 1.0),
+            },
+            "External Investment": {
+                "Financial Risk":    (6.0, 1.2),
+                "Business Control":  (4.0, 1.5),
+                "Growth Speed":      (8.5, 1.0),
+                "Market Competition": (7.5, 1.0),
+            },
+        },
+    },
+
+    "🌱 Energy Policy Choice": {
+        "description": "Evaluate renewable vs. fossil-fuel energy policies across key dimensions.",
+        "factors": {
+            "Environmental Impact": 0.35,
+            "Economic Cost":        0.25,
+            "Energy Security":      0.25,
+            "Job Creation":         0.15,
+        },
+        "options": {
+            "Renewable Energy": {
+                "Environmental Impact": (9.5, 0.5),
+                "Economic Cost":        (4.0, 1.5),
+                "Energy Security":      (6.5, 1.2),
+                "Job Creation":         (7.0, 1.0),
+            },
+            "Fossil Fuel Expansion": {
+                "Environmental Impact": (1.5, 0.8),
+                "Economic Cost":        (7.5, 1.0),
+                "Energy Security":      (7.0, 1.0),
+                "Job Creation":         (6.0, 1.0),
+            },
+        },
+    },
+
+    "🎓 Career Path Selection": {
+        "description": "Choose between a corporate job and entrepreneurship based on life priorities.",
+        "factors": {
+            "Financial Stability": 0.30,
+            "Work-Life Balance":   0.25,
+            "Growth Potential":    0.25,
+            "Personal Fulfillment":0.20,
+        },
+        "options": {
+            "Corporate Job": {
+                "Financial Stability": (8.0, 0.8),
+                "Work-Life Balance":   (5.5, 1.2),
+                "Growth Potential":    (6.0, 1.0),
+                "Personal Fulfillment":(5.0, 1.5),
+            },
+            "Entrepreneurship": {
+                "Financial Stability": (4.0, 2.0),
+                "Work-Life Balance":   (3.5, 1.8),
+                "Growth Potential":    (9.0, 0.8),
+                "Personal Fulfillment":(8.5, 1.0),
+            },
+        },
+    },
+
+    "🏥 Healthcare System Reform": {
+        "description": "Public universal healthcare vs. private insurance-based model.",
+        "factors": {
+            "Accessibility":        0.30,
+            "Quality of Care":      0.25,
+            "Government Spending":  0.25,
+            "Innovation Drive":     0.20,
+        },
+        "options": {
+            "Universal Public Healthcare": {
+                "Accessibility":        (9.0, 0.5),
+                "Quality of Care":      (6.5, 1.0),
+                "Government Spending":  (3.0, 1.2),
+                "Innovation Drive":     (5.0, 1.0),
+            },
+            "Private Insurance Model": {
+                "Accessibility":        (4.5, 1.5),
+                "Quality of Care":      (8.0, 0.8),
+                "Government Spending":  (8.0, 0.8),
+                "Innovation Drive":     (8.5, 0.8),
+            },
+        },
+    },
+
+    "✏️ Custom Scenario": {
+        "description": "Define your own factors, weights, and options for any decision.",
+        "factors": {},
+        "options": {},
+    },
+}
+
+
+# ─────────────────────────────────────────────
+# SIDEBAR — PROBLEM SELECTOR
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## 🔭 Outcome Analyser")
+    st.markdown("---")
+    problem_name = st.selectbox(
+        "Select a Problem",
+        list(PROBLEMS.keys()),
+        help="Choose from pre-built scenarios or create your own.",
+    )
+    st.markdown("---")
+    trials = st.select_slider(
+        "Monte Carlo Trials",
+        options=[1_000, 5_000, 10_000, 50_000, 100_000],
+        value=10_000,
+        help="More trials = more accurate results, but slower.",
+    )
+    st.markdown("---")
+    st.markdown("<div style='color:#8b949e; font-size:0.78rem;'>System Analysis & Design<br>Alternative Outcome Analyser v2.0</div>", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# HEADER
+# ─────────────────────────────────────────────
+st.markdown('<div class="main-title">Alternative Outcome Analyser</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="subtitle">Monte Carlo Simulation · Decision Tree · Sensitivity Analysis</div>', unsafe_allow_html=True)
+
+problem = PROBLEMS[problem_name]
+st.markdown(f'<div class="card">📋 <b>{problem_name}</b> — {problem["description"]}</div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# CUSTOM SCENARIO BUILDER
+# ─────────────────────────────────────────────
+if problem_name == "✏️ Custom Scenario":
+    st.markdown('<div class="section-header">🛠 Build Your Scenario</div>', unsafe_allow_html=True)
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("**Define Factors & Weights**")
+        num_factors = st.number_input("Number of Factors", 2, 6, 3, key="nf")
+        factors_custom = {}
+        for i in range(int(num_factors)):
+            c1, c2 = st.columns([2, 1])
+            fname = c1.text_input(f"Factor {i+1} name", value=f"Factor {i+1}", key=f"fn{i}")
+            fw = c2.number_input(f"Weight", 0.01, 1.0, 0.25, key=f"fw{i}")
+            factors_custom[fname] = fw
+
+        # Normalise weights
+        total_w = sum(factors_custom.values())
+        factors_custom = {k: round(v / total_w, 4) for k, v in factors_custom.items()}
+        st.caption(f"Weights normalised to sum = 1.0")
+
+    with col_b:
+        st.markdown("**Define Options**")
+        num_opts = st.number_input("Number of Options", 2, 5, 2, key="no")
+        options_custom = {}
+        for i in range(int(num_opts)):
+            opt_name = st.text_input(f"Option {i+1} name", value=f"Option {i+1}", key=f"on{i}")
+            options_custom[opt_name] = {}
+            for f in factors_custom:
+                c1, c2 = st.columns(2)
+                base = c1.number_input(f"{opt_name} · {f} (score)", 0.0, 10.0, 5.0, key=f"b{i}{f}")
+                unc  = c2.number_input(f"± uncertainty", 0.0, 5.0, 1.0, key=f"u{i}{f}")
+                options_custom[opt_name][f] = (base, unc)
+
+    factors = factors_custom
+    options = options_custom
+
+else:
+    # ─────────────────────────────────────────
+    # EDITABLE SCORES FOR PRESET PROBLEMS
+    # ─────────────────────────────────────────
+    factors = problem["factors"]
+    options = {k: dict(v) for k, v in problem["options"].items()}
+
+    st.markdown('<div class="section-header">⚙️ Adjust Scores & Uncertainty</div>', unsafe_allow_html=True)
+    tabs = st.tabs(list(options.keys()))
+    for i, (opt_name, tab) in enumerate(zip(options.keys(), tabs)):
+        with tab:
+            cols = st.columns(len(factors))
+            for j, (f, w) in enumerate(factors.items()):
+                with cols[j]:
+                    base_default, unc_default = options[opt_name][f]
+                    st.markdown(f"<div class='factor-tag'>{f}<br><small>w={w}</small></div>", unsafe_allow_html=True)
+                    new_base = st.slider(
+                        f"Score", 0.0, 10.0, float(base_default), 0.5,
+                        key=f"s_{opt_name}_{f}"
+                    )
+                    new_unc = st.slider(
+                        f"± Uncertainty", 0.0, 3.0, float(unc_default), 0.1,
+                        key=f"u_{opt_name}_{f}"
+                    )
+                    options[opt_name][f] = (new_base, new_unc)
+
+
+# ─────────────────────────────────────────────
+# RUN BUTTON
+# ─────────────────────────────────────────────
+st.markdown("---")
+run_col = st.columns([1, 2, 1])[1]
+with run_col:
+    run = st.button(f"🚀 Run Simulation ({trials:,} trials)")
+
+if run:
+    with st.spinner("Running Monte Carlo simulation…"):
+        results = monte_carlo(options, factors, trials)
+
+    best_name = max(results, key=lambda n: results[n]["avg"])
+    sens = sensitivity(options, factors)
+
+    # ──────────────────────────────────────────
+    # SECTION 1 — SUMMARY METRICS
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="section-header">📊 Results Summary</div>', unsafe_allow_html=True)
+
+    metric_cols = st.columns(len(results))
+    for col, (name, r) in zip(metric_cols, results.items()):
+        with col:
+            is_best = name == best_name
+            badge = "🏆 Recommended" if is_best else ""
+            border_color = "#2ea043" if is_best else "#30363d"
+            st.markdown(f"""
+            <div style='background:#161b22; border:1px solid {border_color}; border-radius:12px;
+                        padding:1.2rem; text-align:center; {"border-top: 3px solid #2ea043;" if is_best else ""}'>
+                <div style='font-size:1.1rem; font-weight:600; color:#e6edf3; margin-bottom:0.5rem;'>{name}</div>
+                {"<div class='winner-badge'>🏆 Recommended</div><br>" if is_best else ""}
+                <div style='font-size:2rem; font-weight:700; font-family:JetBrains Mono; color:#58a6ff;'>{r["avg"]:.2f}</div>
+                <div style='font-size:0.75rem; color:#8b949e;'>AVG SCORE (/ 10)</div>
+                <br>
+                <div style='font-size:1.4rem; font-weight:600; color:#3fb950;'>{r["prob"]:.1f}%</div>
+                <div style='font-size:0.75rem; color:#8b949e;'>SUCCESS PROBABILITY (≥ 6)</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ──────────────────────────────────────────
+    # RECOMMENDATION BOX
+    # ──────────────────────────────────────────
+    st.markdown(f"""
+    <div class="recommendation-box">
+        <b>✅ Recommendation:</b> Based on {trials:,} simulated trials, <b>{best_name}</b> achieves the highest
+        average weighted score of <b>{results[best_name]["avg"]:.2f}/10</b> with a
+        <b>{results[best_name]["prob"]:.1f}% success probability</b>.
+        The most influential factor is <b>{list(sens.keys())[0]}</b>.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ──────────────────────────────────────────
+    # SECTION 2 — CHARTS (3 tabs)
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="section-header">📈 Visualisations</div>', unsafe_allow_html=True)
+
+    chart_tab1, chart_tab2, chart_tab3, chart_tab4 = st.tabs([
+        "Distribution", "Bar Comparison", "Sensitivity", "Factor Radar"
+    ])
+
+    colors = ["#58a6ff", "#3fb950", "#ff7b72", "#bc8cff", "#ffa657"]
+
+    with chart_tab1:
+        fig = go.Figure()
+        for i, (name, r) in enumerate(results.items()):
+            fig.add_trace(go.Histogram(
+                x=r["raw"],
+                nbinsx=60,
+                name=name,
+                opacity=0.75,
+                marker_color=colors[i % len(colors)],
+            ))
+        fig.update_layout(
+            barmode="overlay",
+            title="Score Distribution across Simulation Trials",
+            xaxis_title="Weighted Score",
+            yaxis_title="Frequency",
+            paper_bgcolor="#161b22",
+            plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3", family="Space Grotesk"),
+            legend=dict(bgcolor="#161b22", bordercolor="#30363d"),
+        )
+        fig.add_vline(x=6, line_dash="dash", line_color="#ff7b72",
+                      annotation_text="Success Threshold (6)", annotation_font_color="#ff7b72")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with chart_tab2:
+        names = list(results.keys())
+        avgs = [results[n]["avg"] for n in names]
+        probs = [results[n]["prob"] for n in names]
+
+        fig = make_subplots(rows=1, cols=2, subplot_titles=["Average Score", "Success Probability (%)"])
+        fig.add_trace(go.Bar(x=names, y=avgs, marker_color=colors[:len(names)], name="Avg Score"), row=1, col=1)
+        fig.add_trace(go.Bar(x=names, y=probs, marker_color=colors[:len(names)], name="Success %"), row=1, col=2)
+        fig.update_layout(
+            showlegend=False,
+            paper_bgcolor="#161b22",
+            plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3", family="Space Grotesk"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with chart_tab3:
+        sens_df = pd.DataFrame({"Factor": list(sens.keys()), "Impact Score": list(sens.values())})
+        fig = px.bar(
+            sens_df, x="Impact Score", y="Factor", orientation="h",
+            color="Impact Score", color_continuous_scale="Blues",
+            title="Sensitivity Analysis — Factor Impact on Outcome",
+        )
+        fig.update_layout(
+            paper_bgcolor="#161b22",
+            plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3", family="Space Grotesk"),
+            coloraxis_showscale=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with chart_tab4:
+        factor_list = list(factors.keys())
+        fig = go.Figure()
+        for i, (name, scores) in enumerate(options.items()):
+            vals = [scores[f][0] for f in factor_list]
+            vals_closed = vals + [vals[0]]
+            factor_closed = factor_list + [factor_list[0]]
+            fig.add_trace(go.Scatterpolar(
+                r=vals_closed,
+                theta=factor_closed,
+                fill="toself",
+                name=name,
+                line_color=colors[i % len(colors)],
+                opacity=0.7,
+            ))
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 10], color="#8b949e"),
+                bgcolor="#0d1117",
+                angularaxis=dict(color="#8b949e"),
+            ),
+            title="Factor Radar — Option Comparison",
+            paper_bgcolor="#161b22",
+            font=dict(color="#e6edf3", family="Space Grotesk"),
+            legend=dict(bgcolor="#161b22", bordercolor="#30363d"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ──────────────────────────────────────────
+    # SECTION 3 — DECISION TREE (text)
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="section-header">🌳 Decision Tree</div>', unsafe_allow_html=True)
+
+    tree_md = "**Decision: " + problem_name + "**\n\n"
+    for name, r in results.items():
+        icon = "🏆" if name == best_name else "📌"
+        bar_len = int(r["avg"] * 4)
+        bar = "█" * bar_len + "░" * (40 - bar_len)
+        tree_md += f"""
+<div class="card">
+{icon} <b>{name}</b><br>
+<code>{bar}</code><br>
+&nbsp;&nbsp;├─ Avg Score: <b>{r["avg"]:.2f} / 10</b><br>
+&nbsp;&nbsp;└─ Success Probability: <b>{r["prob"]:.1f}%</b>
+</div>
+"""
+    st.markdown(tree_md, unsafe_allow_html=True)
+
+    # ──────────────────────────────────────────
+    # SECTION 4 — SENSITIVITY TABLE
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<div class="section-header">🔍 Sensitivity Analysis</div>', unsafe_allow_html=True)
+
+    sens_rows = []
+    for rank, (f, score) in enumerate(sens.items(), 1):
+        w = factors[f]
+        sens_rows.append({
+            "Rank": rank,
+            "Factor": f,
+            "Weight": f"{w:.2f}",
+            "Impact Score": f"{score:.2f}",
+            "Influence": "🔴 High" if rank == 1 else ("🟡 Medium" if rank == 2 else "🟢 Low"),
+        })
+    st.dataframe(
+        pd.DataFrame(sens_rows),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    # ──────────────────────────────────────────
+    # SECTION 5 — RAW DATA EXPORT
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📥 Export Raw Data"):
+        export = {
+            "problem": problem_name,
+            "trials": trials,
+            "factors": factors,
+            "results": {
+                k: {"avg": v["avg"], "prob": v["prob"]}
+                for k, v in results.items()
+            },
+            "sensitivity": sens,
+            "recommendation": best_name,
+        }
+        st.json(export)
+        st.download_button(
+            "⬇️ Download JSON",
+            data=json.dumps(export, indent=2),
+            file_name="outcome_analysis.json",
+            mime="application/json",
+        )
+
+else:
+    # ──────────────────────────────────────────
+    # LANDING PLACEHOLDER
+    # ──────────────────────────────────────────
+    st.markdown("---")
+    cols = st.columns(3)
+    cards = [
+        ("🎲", "Monte Carlo Simulation", "Runs thousands of randomised trials to account for real-world uncertainty in each factor."),
+        ("🌳", "Decision Tree Analysis", "Visualises each option's expected outcome and success probability in a clear tree view."),
+        ("🔍", "Sensitivity Analysis", "Identifies which factors have the most influence on the final decision."),
+    ]
+    for col, (icon, title, desc) in zip(cols, cards):
+        with col:
+            st.markdown(f"""
+            <div class="card" style="text-align:center; min-height:160px;">
+                <div style="font-size:2rem;">{icon}</div>
+                <div style="font-weight:600; margin:0.5rem 0; color:#58a6ff;">{title}</div>
+                <div style="color:#8b949e; font-size:0.88rem;">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.info("👈 Select a problem from the sidebar, adjust the parameters above, then click **Run Simulation**.")
